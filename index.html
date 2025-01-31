@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ANPR Web App</title>
+    <script src='https://unpkg.com/tesseract.js@v2.1.0/dist/tesseract.min.js'></script>
+    <script src="https://docs.opencv.org/4.5.2/opencv.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+        }
+        #videoContainer {
+            position: relative;
+            max-width: 100%;
+            width: 640px;
+        }
+        #videoCanvas, #processedCanvas, #licensePlateCanvas {
+            max-width: 100%;
+            border: 2px solid #333;
+            margin: 10px 0;
+        }
+        #plateList {
+            list-style-type: none;
+            padding: 0;
+            width: 300px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .plate-item {
+            background-color: #f0f0f0;
+            margin: 5px 0;
+            padding: 10px;
+            border-radius: 5px;
+            animation: slideIn 0.5s ease;
+        }
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateY(-20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+    </style>
+</head>
+<body>
+    <div id="videoContainer">
+        <video id="videoElement" autoplay playsinline></video>
+        <canvas id="videoCanvas"></canvas>
+        <canvas id="processedCanvas"></canvas>
+        <canvas id="licensePlateCanvas"></canvas>
+    </div>
+    <ul id="plateList"></ul>
+
+    <script>
+        const videoElement = document.getElementById('videoElement');
+        const videoCanvas = document.getElementById('videoCanvas');
+        const processedCanvas = document.getElementById('processedCanvas');
+        const licensePlateCanvas = document.getElementById('licensePlateCanvas');
+        const plateList = document.getElementById('plateList');
+        const videoCtx = videoCanvas.getContext('2d');
+        const processedCtx = processedCanvas.getContext('2d');
+        const licensePlateCtx = licensePlateCanvas.getContext('2d');
+        const detectedPlates = new Set();
+
+        async function setupCamera() {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: 'environment' }
+            });
+            videoElement.srcObject = stream;
+            return new Promise(resolve => {
+                videoElement.onloadedmetadata = () => {
+                    videoElement.play();
+                    videoCanvas.width = videoElement.videoWidth;
+                    videoCanvas.height = videoElement.videoHeight;
+                    processedCanvas.width = videoElement.videoWidth;
+                    processedCanvas.height = videoElement.videoHeight;
+                    licensePlateCanvas.width = videoElement.videoWidth;
+                    licensePlateCanvas.height = videoElement.videoHeight;
+                    resolve();
+                };
+            });
+        }
+
+        function detectLicensePlateRegion(src) {
+            let gray = new cv.Mat();
+            let hsv = new cv.Mat();
+            let edges = new cv.Mat();
+            let contours = new cv.MatVector();
+            let hierarchy = new cv.Mat();
+
+            // Konversi ke grayscale
+            cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+
+            // Noise reduction
+            cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
+
+            // Deteksi tepi
+            cv.Canny(gray, edges, 50, 150);
+
+            // Temukan kontour
+            cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+            let licensePlateContour = null;
+            for (let i = 0; i < contours.size(); i++) {
+                let contour = contours.get(i);
+                let area = cv.contourArea(contour);
+                let perimeter = cv.arcLength(contour, true);
+                let approx = new cv.Mat();
+
+                // Aproksimasi kontour
+                cv.approxPolyDP(contour, approx, 0.02 * perimeter, true);
+
+                // Kriteria seleksi area pelat nomor 
+                if (approx.rows === 4 && 
+                    area > 500 && area < 10000 && 
+                    cv.isContourConvex(approx)) {
+                    licensePlateContour = approx;
+                    break;
+                }
+            }
+
+            // Bersihkan memori
+            gray.delete();
+            hsv.delete();
+            edges.delete();
+            contours.delete();
+            hierarchy.delete();
+
+            return licensePlateContour;
+        }
+
+        function extractLicensePlate(src, licensePlateContour) {
+            if (!licensePlateContour) return null;
+
+            // Dapatkan bounding rect
+            let rect = cv.boundingRect(licensePlateContour);
+            
+            // Crop area pelat nomor
+            let roi = src.roi(rect);
+
+            // Tampilkan bounding box di video canvas
+            videoCtx.beginPath();
+            videoCtx.rect(rect.x, rect.y, rect.width, rect.height);
+            videoCtx.lineWidth = 3;
+            videoCtx.strokeStyle = 'green';
+            videoCtx.stroke();
+
+            // Tampilkan area pelat di canvas terpisah
+            licensePlateCtx.clearRect(0, 0, licensePlateCanvas.width, licensePlateCanvas.height);
+            cv.imshow('licensePlateCanvas', roi);
+
+            return roi;
+        }
+
+        async function preprocessLicensePlate(licensePlateMat) {
+            if (!licensePlateMat) return null;
+
+            let processed = new cv.Mat();
+            
+            // Konversi ke grayscale
+            cv.cvtColor(licensePlateMat, processed, cv.COLOR_RGBA2GRAY);
+            
+            // Adaptive thresholding
+            cv.adaptiveThreshold(processed, processed, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 11, 2);
+            
+            // Morphological operations
+            let kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(2, 2));
+            cv.morphologyEx(processed, processed, cv.MORPH_CLOSE, kernel);
+
+            // Tampilkan di processed canvas
+            cv.imshow('processedCanvas', processed);
+
+            return processed;
+        }
+
+        async function performOCR(preprocessedImage) {
+            if (!preprocessedImage) return null;
+
+            // Konversi Mat ke ImageData
+            let canvasElement = document.createElement('canvas');
+            cv.imshow(canvasElement, preprocessedImage);
+            
+            // Jalankan Tesseract OCR
+            const { data: { text } } = await Tesseract.recognize(
+                canvasElement,
+                'eng',
+                { 
+                    tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
+                    tessedit_pageseg_mode: 'single line'
+                }
+            );
+
+            // Bersihkan dan validasi nomor pelat
+            const cleanedText = text.replace(/[^A-Z0-9]/g, '').trim();
+            return cleanedText.length > 4 ? cleanedText : null;
+        }
+
+        async function detectLicensePlate() {
+            // Ambil frame dari video
+            videoCtx.drawImage(videoElement, 0, 0, videoCanvas.width, videoCanvas.height);
+            
+            try {
+                // Buat elemen gambar dari canvas
+                let imgElement = document.createElement('img');
+                imgElement.src = videoCanvas.toDataURL('image/png'); await new Promise(resolve => {
+                    imgElement.onload = async () => {
+                        // Deteksi area pelat nomor
+                        let src = cv.imread(imgElement);
+                        let licensePlateContour = detectLicensePlateRegion(src);
+                        
+                        // Ekstrak area pelat nomor
+                        let licensePlateMat = extractLicensePlate(src, licensePlateContour);
+                        
+                        // Preprocessing untuk OCR
+                        let preprocessedImage = await preprocessLicensePlate(licensePlateMat);
+                        
+                        // Perform OCR hanya jika area pelat terdeteksi
+                        const plateNumber = await performOCR(preprocessedImage);
+                        
+                        // Tambahkan ke list jika valid
+                        if (plateNumber && !detectedPlates.has(plateNumber)) {
+                            detectedPlates.add(plateNumber);
+                            
+                            const listItem = document.createElement('li');
+                            listItem.textContent = plateNumber;
+                            listItem.classList.add('plate-item');
+                            plateList.insertBefore(listItem, plateList.firstChild);
+
+                            // Batasi jumlah item
+                            if (plateList.children.length > 10) {
+                                plateList.removeChild(plateList.lastChild);
+                            }
+                        }
+
+                        // Bersihkan memori
+                        src.delete();
+                        if (licensePlateMat) licensePlateMat.delete();
+                        if (preprocessedImage) preprocessedImage.delete();
+                        resolve();
+                    };
+                });
+            } catch (error) {
+                console.error('Error in license plate detection:', error);
+            }
+        }
+
+        async function main() {
+            // Tunggu OpenCV dan Tesseract siap
+            await Promise.all([
+                new Promise(resolve => cv.onRuntimeInitialized = resolve),
+                Tesseract.ready
+            ]);
+
+            // Setup kamera
+            await setupCamera();
+            
+            // Deteksi pelat setiap 2 detik (sesuaikan interval)
+            setInterval(detectLicensePlate, 100);
+        }
+
+        // Jalankan aplikasi
+        main().catch(console.error);
+    </script>
+</body>
+</html>
