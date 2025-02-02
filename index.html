@@ -19,7 +19,7 @@
             max-width: 100%;
             width: 640px;
         }
-        #videoCanvas, #processedCanvas, #licensePlateCanvas {
+        #videoCanvas {
             max-width: 100%;
             border: 2px solid #333;
             margin: 10px 0;
@@ -42,10 +42,15 @@
             from { opacity: 0; transform: translateY(-20px); }
             to { opacity: 1; transform: translateY(0); }
         }
+        /* Sembunyikan elemen yang tidak diperlukan */
+        #videoElement, #processedCanvas, #licensePlateCanvas {
+            display: none;
+        }
     </style>
 </head>
 <body>
     <div id="videoContainer">
+        <!-- Sembunyikan elemen video dan canvas yang tidak diperlukan -->
         <video id="videoElement" autoplay playsinline></video>
         <canvas id="videoCanvas"></canvas>
         <canvas id="processedCanvas"></canvas>
@@ -96,6 +101,13 @@
             // Noise reduction
             cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
 
+            // Histogram equalization untuk meningkatkan kontras
+            cv.equalizeHist(gray, gray);
+
+            // Sharpening filter
+            let kernel = cv.matFromArray(3, 3, cv.CV_32FC1, [0, -1, 0, -1, 5, -1, 0, -1, 0]);
+            cv.filter2D(gray, gray, -1, kernel);
+
             // Deteksi tepi
             cv.Canny(gray, edges, 50, 150);
 
@@ -127,6 +139,7 @@
             edges.delete();
             contours.delete();
             hierarchy.delete();
+            kernel.delete();
 
             return licensePlateContour;
         }
@@ -147,7 +160,7 @@
             videoCtx.strokeStyle = 'green';
             videoCtx.stroke();
 
-            // Tampilkan area pelat di canvas terpisah
+            // Tampilkan area pelat di canvas terpisah (tetap disembunyikan)
             licensePlateCtx.clearRect(0, 0, licensePlateCanvas.width, licensePlateCanvas.height);
             cv.imshow('licensePlateCanvas', roi);
 
@@ -162,6 +175,9 @@
             // Konversi ke grayscale
             cv.cvtColor(licensePlateMat, processed, cv.COLOR_RGBA2GRAY);
             
+            // Histogram equalization untuk meningkatkan kontras
+            cv.equalizeHist(processed, processed);
+
             // Adaptive thresholding
             cv.adaptiveThreshold(processed, processed, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 11, 2);
             
@@ -169,10 +185,16 @@
             let kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(2, 2));
             cv.morphologyEx(processed, processed, cv.MORPH_CLOSE, kernel);
 
-            // Tampilkan di processed canvas
+            // Tampilkan di processed canvas (tetap disembunyikan)
             cv.imshow('processedCanvas', processed);
 
             return processed;
+        }
+
+        function validatePlateNumber(text) {
+            // Validasi format pelat nomor Indonesia
+            const platePattern = /^[A-Z]{1,2}\d{1,4}[A-Z]{1,3}$/;
+            return platePattern.test(text);
         }
 
         async function performOCR(preprocessedImage) {
@@ -194,7 +216,7 @@
 
             // Bersihkan dan validasi nomor pelat
             const cleanedText = text.replace(/[^A-Z0-9]/g, '').trim();
-            return cleanedText.length > 4 ? cleanedText : null;
+            return validatePlateNumber(cleanedText) ? cleanedText : null;
         }
 
         async function detectLicensePlate() {
