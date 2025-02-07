@@ -1,0 +1,17 @@
+/* Custom gradient and dark theme */
+.bg-gradient-primary {
+    background: linear-gradient(135deg, #1e3a8a 0%, #3b82f6 100%);
+}
+
+.text-gradient {
+    background: rgb(141,216,255);
+    background: linear-gradient(45deg, rgba(141,216,255,1) 0%, rgba(68,179,255,1) 50%, rgba(25,91,255,1) 100%);
+    background-clip: text;
+    -webkit-background-clip: text;
+    color: transparent;
+}
+
+.border-gradient {
+    border-image: linear-gradient(135deg, #3b82f6 0%, #93c5fd 100%);
+    border-image-slice: 1;
+}
